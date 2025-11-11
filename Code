@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Bank as "Deacquiring Bank\n(Chase / MX / Pfizer / Braintree)"
+    participant Excel as "Excel Import / Staging"
+    participant n8n as "n8n (Automation)"
+    participant Human as "Analyst (Human)"
+    participant OrderDB as "Order DB / Fulfillment"
+    participant EvidenceStore as "Evidence Store (S3 / Drive)"
+    participant RefundSys as "Refund System"
+    participant Processor as "Payment Processor / Gateway\n(Braintree / others)"
+    participant CardNetwork as "Card Network / Issuer"
+    participant MerchantPortal as "Merchant Portal / Ticketing"
+
+    Bank->>Excel: Send chargeback file (CSV/Excel)
+    Excel->>n8n: Import and push new records
+    n8n->>n8n: Normalize reason codes (Visa, MC, Amex)
+    n8n->>Human: Create review task with summary
+    Human->>n8n: Decision: Accept or Dispute
+
+    alt Dispute path
+        Human->>n8n: Mark as Dispute
+        n8n->>OrderDB: Fetch order, fulfillment, shipping proof
+        n8n->>EvidenceStore: Pull emails, convo logs, screenshots
+        n8n->>RefundSys: Retrieve refund and credit history
+        n8n->>Processor: Fetch raw transaction, settlement, AVS/CVV
+        n8n->>n8n: Assemble evidence packet (PDF/ZIP)
+        n8n->>Processor: Submit dispute and evidence via API or portal
+        Processor->>Bank: Forward evidence to card network
+        Bank->>CardNetwork: Forward to issuer for adjudication
+        CardNetwork->>Bank: Issuer decision (won or lost)
+        Bank->>Processor: Notify outcome
+        Processor->>n8n: Relay outcome
+        n8n->>Excel: Update chargeback row with status, notes, case ID
+        n8n->>MerchantPortal: Open ticket for manual follow-up
+        n8n->>Human: Notify of outcome and next steps
+    end
+
+    alt Accept path
+        Human->>n8n: Mark as Accept
+        n8n->>RefundSys: Trigger refund or reversal if required
+        n8n->>Excel: Update chargeback row as accepted/refunded
+        n8n->>MerchantPortal: Close or annotate ticket
+    end
+
+    Note over n8n,Processor: Logging, audit trail, retries, rate limiting, idempotency
+    Note over Excel,Human: Human-in-the-loop for edge cases and escalations
+
+    n8n->>Processor: Poll for batch outcomes (daily)
+    Processor->>n8n: Provide batch results
+    n8n->>Excel: Reconcile differences and flag exceptions
+
+    Note over Bank,Processor: Braintree approximately 80% of volume and higher refund frequency
